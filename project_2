@@ -1,0 +1,95 @@
+import numpy as np
+
+class QLearningAgent:
+    def __init__(self, alpha=0.03, beta=3, gamma=1, action_space=['left', 'right']):
+        self.q_table = dict()
+        self.alpha = alpha  
+        self.beta = beta   
+        self.gamma = gamma  
+        self.action_space = action_space
+        # track the number of times a state-action pair is visited (for plotting later)
+        self.state_action_pair_counts = dict()  
+
+    def get_q_value(self, state, action):
+        return self.q_table.get((state, action), 0.0)
+
+    def update_q_value(self, state, action, reward, next_state):
+        # q-learning algorithm??
+        old_q_value = self.get_q_value(state, action)
+        next_max_q = max([self.get_q_value(next_state, a) for a in self.action_space])
+        self.q_table[(state, action)] = old_q_value + self.alpha * (reward + self.gamma * next_max_q - old_q_value)
+
+    def choose_action(self, state):
+        # !! - implement softmax/Luce rule??
+        q_values = np.array([self.get_q_value(state, action) for action in self.action_space])
+        exp_q = np.exp(self.beta * q_values)
+        probabilities = exp_q / np.sum(exp_q)
+        return np.random.choice(self.action_space, p=probabilities)
+
+    def learn(self, state, action, reward, next_state):
+        self.update_q_value(state, action, reward, next_state)
+        self.state_action_pair_counts[(state, action)] = self.state_action_pair_counts.get((state, action), 0) + 1
+
+class Environment:
+    def __init__(self, agent_type='OFC'):
+        self.agent_type = agent_type
+        self.states = ['state1', 'state2'] if agent_type == 'sham' else ['default']
+        self.current_state = 'state1' if agent_type == 'sham' else 'default'
+        self.reward_state = 'right'  # initial reward state
+        self.switch_criterion = 0.9  # criterion for reversal
+        self.correct_actions = 0
+        self.total_actions = 0
+
+    def get_reward(self, action):
+        # sham agents?
+        if self.agent_type == 'sham':
+            if self.current_state == 'state1':
+                reward = 1 if action == 'right' else 0
+            else:  # 'state2'
+                reward = 1 if action == 'left' else 0
+        else:
+            reward = 1 if action == self.reward_state else 0
+        
+        # increment counts
+        self.total_actions += 1
+        if reward == 1:
+            self.correct_actions += 1
+
+        # switch reward if criterion is met
+        if self.correct_actions / self.total_actions > self.switch_criterion:
+            self.reward_state = 'left' if self.reward_state == 'right' else 'right'
+            # reset counts after a switch for OFC agents
+            if self.agent_type == 'OFC':
+                self.correct_actions, self.total_actions = 0, 0
+
+        return reward
+
+    def step(self, action):
+        reward = self.get_reward(action)
+
+        if self.agent_type == 'sham':
+            if (self.current_state == 'state1' and action == 'right') or \
+               (self.current_state == 'state2' and action == 'left'):
+                self.current_state = 'state2' if self.current_state == 'state1' else 'state1'
+
+        return self.current_state, reward
+
+def simulate(agent_type='OFC'):
+    agent = QLearningAgent()
+    env = Environment(agent_type)
+    episodes = 1000
+    for _ in range(episodes):
+        state = env.current_state
+        action = agent.choose_action(state)
+        next_state, reward = env.step(action)
+        agent.learn(state, action, reward, next_state)
+
+    return agent.q_table, agent.state_action_pair_counts
+
+q_values_sham, state_action_counts_sham = simulate(agent_type='sham')
+q_values_ofc, state_action_counts_ofc = simulate(agent_type='OFC')
+
+print("Sham")
+print(q_values_sham, state_action_counts_sham)
+print("OFC")
+print(q_values_ofc, state_action_counts_ofc)
