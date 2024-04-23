@@ -55,13 +55,12 @@ class ColorPaletteDataset(Dataset):
     """
     Generate color palettes and flag if similar (1 = similar, 0 = dissimilar)
     """
-    def __init__(self, size=1000, proportion_similar=0.7):  
+    def __init__(self, size=1000, proportion_similar=0.7):
         num_similar = int(size * proportion_similar)
         num_dissimilar = size - num_similar
         self.data = [generate_color_palette(True) for _ in range(num_similar)] + \
                     [generate_color_palette(False) for _ in range(num_dissimilar)]
-        self.labels = np.random.randint(0, 2, size)
-        self.similarity_flags = [1] * num_similar + [0] * num_dissimilar
+        self.labels = [1] * num_similar + [0] * num_dissimilar  
 
     def __len__(self):
         return len(self.data)
@@ -69,7 +68,7 @@ class ColorPaletteDataset(Dataset):
     def __getitem__(self, idx):
         sample = torch.tensor(self.data[idx], dtype=torch.float32).permute(2, 0, 1)
         label = torch.tensor(self.labels[idx], dtype=torch.long)
-        similarity_flag = torch.tensor(self.similarity_flags[idx], dtype=torch.float32)
+        similarity_flag = torch.tensor((label == 1).float(), dtype=torch.float32)  
         return sample, label, similarity_flag
 
 class ColorMemoryCNN(nn.Module):
@@ -93,7 +92,7 @@ class ColorMemoryCNN(nn.Module):
         x = self.fc2(x)
         return x
 
-def custom_loss(outputs, labels, similarity_flags, base_loss_fn, scale_factor=5.0):
+def custom_loss(outputs, labels, similarity_flags, base_loss_fn, scale_factor=1):
     """
     Adjust loss based on similarity. 
     Increases loss for similar palettes (similarity_flags = 1)
@@ -102,10 +101,10 @@ def custom_loss(outputs, labels, similarity_flags, base_loss_fn, scale_factor=5.
     scaled_loss = base_loss * (1 + scale_factor * similarity_flags) 
     return scaled_loss.mean()
 
-def train_test_model(dataset_train, dataset_test, model, epochs=20, batch_size=10):
+def train_test_model(dataset_train, dataset_test, model, epochs=11, batch_size=1000):
     train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
     criterion = nn.CrossEntropyLoss()
 
     model.train()
@@ -120,23 +119,38 @@ def train_test_model(dataset_train, dataset_test, model, epochs=20, batch_size=1
     model.eval()
     correct = 0
     total = 0
+    true_positives = [0, 0]
+    condition_positives = [0, 0]
     with torch.no_grad():
         for inputs, labels, similarity_flags in test_loader:
             outputs = model(inputs, similarity_flags)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+            for label in range(2):
+                condition_positives[label] += (labels == label).sum().item()
+                true_positives[label] += ((predicted == labels) & (labels == label)).sum().item()
 
     accuracy = 100 * correct / total
-    return accuracy
+    recall = [100 * true_positives[i] / condition_positives[i] if condition_positives[i] > 0 else 0 for i in range(2)]
+    return accuracy, recall
 
-dataset_train = ColorPaletteDataset(size=1000, proportion_similar=0.75)
+dataset_train = ColorPaletteDataset(size=10, proportion_similar=0.7)
 dataset_similar_test = ColorPaletteDataset(size=1000, proportion_similar=1)
 dataset_dissimilar_test = ColorPaletteDataset(size=1000, proportion_similar=0)
 
 model = ColorMemoryCNN()
+
 print("Training model on mixed dataset...")
-train_test_model(dataset_train, dataset_train, model)
+_, recall_train = train_test_model(dataset_train, dataset_train, model)
+print(f"Recall for similar palettes (train): {recall_train[1]}%")
+print(f"Recall for dissimilar palettes (train): {recall_train[0]}%")
+
+_, recall_similar = train_test_model(dataset_train, dataset_similar_test, model)
+_, recall_dissimilar = train_test_model(dataset_train, dataset_dissimilar_test, model)
+
+print(f"Recall on test set with similar hues: {recall_similar[1]}%")
+print(f"Recall on test set with dissimilar hues: {recall_dissimilar[0]}%")
 
 accuracy_similar = train_test_model(dataset_train, dataset_similar_test, model)
 accuracy_dissimilar = train_test_model(dataset_train, dataset_dissimilar_test, model)
