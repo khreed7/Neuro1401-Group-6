@@ -38,9 +38,9 @@ def calculate_color_variability(palette):
     flattened_palette = palette.reshape(-1, 3)
     return np.std(flattened_palette, axis=0).mean()
 
-def generate_color_palette(similar=True):
+def generate_color_palette(similar=True, dissimilar_hue_variation=180):
     base_hue = np.random.rand() * 360
-    hue_variation = 15 if similar else 180
+    hue_variation = 15 if similar else dissimilar_hue_variation
     palette = np.zeros((3, 3, 3))
     for i in range(3):
         for j in range(3):
@@ -63,10 +63,8 @@ class ColorChangeDataset(Dataset):
             changed = False
             if np.random.rand() < change_probability:
                 i, j = np.random.randint(0, 3), np.random.randint(0, 3)
-                hue = (base_palette[i, j, 0] * 360 + 180) % 360 #alter dissimilarity here?
-                saturation = base_palette[i, j, 1]
-                value = base_palette[i, j, 2]
-                after_palette[i, j] = hsv_to_rgb(hue, saturation, value)
+                new_hue = (base_palette[i, j, 0] * 360 + 180) % 360 # edit this 
+                after_palette[i, j] = hsv_to_rgb(new_hue, base_palette[i, j, 1], base_palette[i, j, 2])
                 changed = True
             self.data.append((base_palette, after_palette, changed, contrast, variability))
 
@@ -131,9 +129,9 @@ def test_model(model, dataset):
 
     total = TP + TN + FP + FN
     accuracy = 100 * (TP + TN) / total if total > 0 else 0
-    precision = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0
-    recall = 100 * TP / (TP + FN) if (TP + FN) > 0 else 0
-    return accuracy, precision, recall, TP, TN, FP, FN
+    same = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0
+    different = 100 * TN / (TN + FN) if (TN + FN) > 0 else 0
+    return accuracy, same, different, TP, TN, FP, FN
 
 dataset_train = ColorChangeDataset()
 model = ColorChangeDetectorCNN()
@@ -142,21 +140,22 @@ train_model(model, dataset_train)
 dataset_similar = ColorChangeDataset(size=1000, change_probability=0.5, mix_ratio=1)
 dataset_different = ColorChangeDataset(size=1000, change_probability=0.5, mix_ratio=0)
 
-accuracy_similar, precision_similar, recall_similar, TP_similar, TN_similar, FP_similar, FN_similar = test_model(model, dataset_similar)
-accuracy_different, precision_different, recall_different, TP_different, TN_different, FP_different, FN_different = test_model(model, dataset_different)
+accuracy_similar, same_similar, different_similar, TP_similar, TN_similar, FP_similar, FN_similar = test_model(model, dataset_similar)
+accuracy_different, same_different, different_different, TP_different, TN_different, FP_different, FN_different = test_model(model, dataset_different)
 
 print(f"Results for similar palettes:")
-print(f"Accuracy: {accuracy_similar}%, Precision: {precision_similar}%, Recall: {recall_similar}%")
+print(f"Accuracy: {accuracy_similar}%, Same: {same_similar}%, Different: {different_similar}%")
 print(f"TP: {TP_similar}, TN: {TN_similar}, FP: {FP_similar}, FN: {FN_similar}")
 
 print(f"Results for different palettes:")
-print(f"Accuracy: {accuracy_different}%, Precision: {precision_different}%, Recall: {recall_different}%")
+print(f"Accuracy: {accuracy_different}%, Same: {same_different}%, Different: {different_different}%")
 print(f"TP: {TP_different}, TN: {TN_different}, FP: {FP_different}, FN: {FN_different}")
 
 '''
 Plot palettes
 '''
 
+'''
 def plot_palette_comparison(before_palette, after_palette, title="Palette Comparison"):
     fig, axs = plt.subplots(1, 2, figsize=(6, 3))
     axs[0].imshow(before_palette, aspect='auto')
@@ -177,4 +176,5 @@ before_similar, after_similar, _, _, _ = dataset_similar[0]
 before_different, after_different, _, _, _ = dataset_different[0]
 
 plot_palette_comparison(before_similar.numpy().transpose(1, 2, 0), after_similar.numpy().transpose(1, 2, 0), title="Similar Palettes")
-plot_palette_comparison(before_different.numpy().transpose(1, 2, 0), after_different.numpy().transpose(1, 2, 0), title="Different Palettes")
+plot_palette_comparison(before_different.numpy().transpose(1, 2, 0), after_different.numpy().transpose(1, 2, 0), title="Dissimilar Palettes")
+'''
