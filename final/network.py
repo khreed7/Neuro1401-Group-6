@@ -144,11 +144,11 @@ accuracy_similar, same_similar, different_similar, TP_similar, TN_similar, FP_si
 accuracy_different, same_different, different_different, TP_different, TN_different, FP_different, FN_different = test_model(model, dataset_different)
 
 print(f"Results for similar palettes:")
-print(f"Accuracy: {accuracy_similar}%, Same: {same_similar}%, Different: {different_similar}%")
+print(f"Accuracy: {accuracy_similar}%, TP rate: {same_similar}%, TN rate: {different_similar}%")
 print(f"TP: {TP_similar}, TN: {TN_similar}, FP: {FP_similar}, FN: {FN_similar}")
 
 print(f"Results for different palettes:")
-print(f"Accuracy: {accuracy_different}%, Same: {same_different}%, Different: {different_different}%")
+print(f"Accuracy: {accuracy_different}%, TP rate: {same_different}%, TN rate: {different_different}%")
 print(f"TP: {TP_different}, TN: {TN_different}, FP: {FP_different}, FN: {FN_different}")
 
 '''
