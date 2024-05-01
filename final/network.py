@@ -2,12 +2,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+import matplotlib.pyplot as plt
 import numpy as np
 
 def hsv_to_rgb(h, s, v):
-    """ 
-    Convert hsv to rgb 
-    """
     h = float(h) / 360
     s = float(s)
     v = float(v)
@@ -28,17 +26,19 @@ def hsv_to_rgb(h, s, v):
         r, g, b = t, p, v
     elif h_i == 5:
         r, g, b = v, p, q
-    return [r, g, b]
+    return np.array([r, g, b])
 
+def calculate_contrast(palette):
+    luminances = [0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] for row in palette for color in row]
+    max_luminance = max(luminances)
+    min_luminance = min(luminances)
+    return (max_luminance + 0.05) / (min_luminance + 0.05)
+
+def calculate_color_variability(palette):
+    flattened_palette = palette.reshape(-1, 3)
+    return np.std(flattened_palette, axis=0).mean()
 
 def generate_color_palette(similar=True):
-    """ 
-    !! - needs editing to reflect paper
-
-    Generate similar and different 3 x 3 color palettes. 
-    Similar palettes have less variation (hue within 15 degrees),
-    different palettes have more variation (within 180 degrees).
-    """
     base_hue = np.random.rand() * 360
     hue_variation = 15 if similar else 180
     palette = np.zeros((3, 3, 3))
@@ -49,111 +49,132 @@ def generate_color_palette(similar=True):
             value = 0.7 + 0.3 * np.random.rand()
             rgb = hsv_to_rgb(hue, saturation, value)
             palette[i, j] = rgb
-    return palette
+    contrast = calculate_contrast(palette)
+    variability = calculate_color_variability(palette)
+    return palette, contrast, variability
 
-class ColorPaletteDataset(Dataset):
-    """
-    Generate color palettes and flag if similar (1 = similar, 0 = dissimilar)
-    """
-    def __init__(self, size=1000, proportion_similar=0.7):
-        num_similar = int(size * proportion_similar)
-        num_dissimilar = size - num_similar
-        self.data = [generate_color_palette(True) for _ in range(num_similar)] + \
-                    [generate_color_palette(False) for _ in range(num_dissimilar)]
-        self.labels = [1] * num_similar + [0] * num_dissimilar  
+class ColorChangeDataset(Dataset):
+    def __init__(self, size=1000, change_probability=0.5, mix_ratio=0.5):
+        self.data = []
+        for _ in range(size):
+            similar = np.random.rand() < mix_ratio
+            base_palette, contrast, variability = generate_color_palette(similar)
+            after_palette = np.copy(base_palette)
+            changed = False
+            if np.random.rand() < change_probability:
+                i, j = np.random.randint(0, 3), np.random.randint(0, 3)
+                hue = (base_palette[i, j, 0] * 360 + 180) % 360 #alter dissimilarity here?
+                saturation = base_palette[i, j, 1]
+                value = base_palette[i, j, 2]
+                after_palette[i, j] = hsv_to_rgb(hue, saturation, value)
+                changed = True
+            self.data.append((base_palette, after_palette, changed, contrast, variability))
+
+    def __getitem__(self, idx):
+        before, after, changed, contrast, variability = self.data[idx]
+        before = torch.tensor(before, dtype=torch.float32).permute(2, 0, 1)
+        after = torch.tensor(after, dtype=torch.float32).permute(2, 0, 1)
+        return before, after, torch.tensor(changed, dtype=torch.long), contrast, variability
 
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
-        sample = torch.tensor(self.data[idx], dtype=torch.float32).permute(2, 0, 1)
-        label = torch.tensor(self.labels[idx], dtype=torch.long)
-        similarity_flag = torch.tensor((label == 1).float(), dtype=torch.float32)  
-        return sample, label, similarity_flag
-
-class ColorMemoryCNN(nn.Module):
-    """
-    Convolution neural network
-    """
+class ColorChangeDetectorCNN(nn.Module):
     def __init__(self):
-        super(ColorMemoryCNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=(3, 3), padding=1)
+        super(ColorChangeDetectorCNN, self).__init__()
+        self.conv1 = nn.Conv2d(6, 16, kernel_size=(3, 3), padding=1)
         self.relu = nn.ReLU()
         self.pool = nn.MaxPool2d(kernel_size=1, stride=1)
         self.fc1 = nn.Linear(16 * 3 * 3, 32)
         self.fc2 = nn.Linear(32, 2)
 
-    def forward(self, x, similarity_flags):
-        inhibition_factor = (1.0 - 0.5 * similarity_flags.unsqueeze(1).unsqueeze(2).unsqueeze(3))
-        x = x * inhibition_factor
+    def forward(self, before, after):
+        x = torch.cat((before, after), dim=1)
         x = self.pool(self.relu(self.conv1(x)))
         x = x.view(-1, 16 * 3 * 3)
         x = self.relu(self.fc1(x))
         x = self.fc2(x)
         return x
 
-def custom_loss(outputs, labels, similarity_flags, base_loss_fn, scale_factor=1):
-    """
-    Adjust loss based on similarity. 
-    Increases loss for similar palettes (similarity_flags = 1)
-    """
-    base_loss = base_loss_fn(outputs, labels)
-    scaled_loss = base_loss * (1 + scale_factor * similarity_flags) 
-    return scaled_loss.mean()
-
-def train_test_model(dataset_train, dataset_test, model, epochs=11, batch_size=1000):
-    train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(dataset_test, batch_size=batch_size, shuffle=False)
+def train_model(model, dataset, epochs=64, batch_size=32):
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     optimizer = optim.Adam(model.parameters(), lr=0.01)
     criterion = nn.CrossEntropyLoss()
-
     model.train()
     for epoch in range(epochs):
-        for inputs, labels, similarity_flags in train_loader:
+        for data in loader:
+            before, after, labels, contrast, variability = data 
             optimizer.zero_grad()
-            outputs = model(inputs, similarity_flags)
-            loss = custom_loss(outputs, labels, similarity_flags, criterion)
+            outputs = model(before, after)
+            loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
 
+def test_model(model, dataset):
+    loader = DataLoader(dataset, batch_size=32, shuffle=False)
+    TP = 0 
+    TN = 0 
+    FP = 0 
+    FN = 0  
+    
     model.eval()
-    correct = 0
-    total = 0
-    true_positives = [0, 0]
-    condition_positives = [0, 0]
     with torch.no_grad():
-        for inputs, labels, similarity_flags in test_loader:
-            outputs = model(inputs, similarity_flags)
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-            for label in range(2):
-                condition_positives[label] += (labels == label).sum().item()
-                true_positives[label] += ((predicted == labels) & (labels == label)).sum().item()
+        for data in loader:
+            before, after, labels, contrast, variability = data
+            outputs = model(before, after)
+            _, predicted = torch.max(outputs, 1)
+            
+            TP += ((predicted == 1) & (labels == 1)).sum().item()
+            TN += ((predicted == 0) & (labels == 0)).sum().item()
+            FP += ((predicted == 1) & (labels == 0)).sum().item()
+            FN += ((predicted == 0) & (labels == 1)).sum().item()
 
-    accuracy = 100 * correct / total
-    recall = [100 * true_positives[i] / condition_positives[i] if condition_positives[i] > 0 else 0 for i in range(2)]
-    return accuracy, recall
+    total = TP + TN + FP + FN
+    accuracy = 100 * (TP + TN) / total if total > 0 else 0
+    precision = 100 * TP / (TP + FP) if (TP + FP) > 0 else 0
+    recall = 100 * TP / (TP + FN) if (TP + FN) > 0 else 0
+    return accuracy, precision, recall, TP, TN, FP, FN
 
-dataset_train = ColorPaletteDataset(size=10, proportion_similar=0.7)
-dataset_similar_test = ColorPaletteDataset(size=1000, proportion_similar=1)
-dataset_dissimilar_test = ColorPaletteDataset(size=1000, proportion_similar=0)
+dataset_train = ColorChangeDataset()
+model = ColorChangeDetectorCNN()
+train_model(model, dataset_train)
 
-model = ColorMemoryCNN()
+dataset_similar = ColorChangeDataset(size=1000, change_probability=0.5, mix_ratio=1)
+dataset_different = ColorChangeDataset(size=1000, change_probability=0.5, mix_ratio=0)
 
-print("Training model on mixed dataset...")
-_, recall_train = train_test_model(dataset_train, dataset_train, model)
-print(f"Recall for similar palettes (train): {recall_train[1]}%")
-print(f"Recall for dissimilar palettes (train): {recall_train[0]}%")
+accuracy_similar, precision_similar, recall_similar, TP_similar, TN_similar, FP_similar, FN_similar = test_model(model, dataset_similar)
+accuracy_different, precision_different, recall_different, TP_different, TN_different, FP_different, FN_different = test_model(model, dataset_different)
 
-_, recall_similar = train_test_model(dataset_train, dataset_similar_test, model)
-_, recall_dissimilar = train_test_model(dataset_train, dataset_dissimilar_test, model)
+print(f"Results for similar palettes:")
+print(f"Accuracy: {accuracy_similar}%, Precision: {precision_similar}%, Recall: {recall_similar}%")
+print(f"TP: {TP_similar}, TN: {TN_similar}, FP: {FP_similar}, FN: {FN_similar}")
 
-print(f"Recall on test set with similar hues: {recall_similar[1]}%")
-print(f"Recall on test set with dissimilar hues: {recall_dissimilar[0]}%")
+print(f"Results for different palettes:")
+print(f"Accuracy: {accuracy_different}%, Precision: {precision_different}%, Recall: {recall_different}%")
+print(f"TP: {TP_different}, TN: {TN_different}, FP: {FP_different}, FN: {FN_different}")
 
-accuracy_similar = train_test_model(dataset_train, dataset_similar_test, model)
-accuracy_dissimilar = train_test_model(dataset_train, dataset_dissimilar_test, model)
+'''
+Plot palettes
+'''
 
-print(f"Accuracy on test set with similar hues: {accuracy_similar}%")
-print(f"Accuracy on test set with dissimilar hues: {accuracy_dissimilar}%")
+def plot_palette_comparison(before_palette, after_palette, title="Palette Comparison"):
+    fig, axs = plt.subplots(1, 2, figsize=(6, 3))
+    axs[0].imshow(before_palette, aspect='auto')
+    axs[0].set_title('Before')
+    axs[0].axis('off')
+
+    axs[1].imshow(after_palette, aspect='auto')
+    axs[1].set_title('After')
+    axs[1].axis('off')
+
+    plt.suptitle(title)
+    plt.show()
+
+dataset_similar = ColorChangeDataset(size=1, change_probability=1, mix_ratio=1)  
+dataset_different = ColorChangeDataset(size=1, change_probability=1, mix_ratio=0)  
+
+before_similar, after_similar, _, _, _ = dataset_similar[0]
+before_different, after_different, _, _, _ = dataset_different[0]
+
+plot_palette_comparison(before_similar.numpy().transpose(1, 2, 0), after_similar.numpy().transpose(1, 2, 0), title="Similar Palettes")
+plot_palette_comparison(before_different.numpy().transpose(1, 2, 0), after_different.numpy().transpose(1, 2, 0), title="Different Palettes")
